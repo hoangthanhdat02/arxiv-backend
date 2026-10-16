@@ -1,0 +1,24 @@
+{
+  "focus_categories": [
+    {
+      "code": "cs.AI",
+      "name": "Artificial Intelligence",
+      "description": "Covers all areas of AI except Natural Language Processing, Machine Learning, and Computer Vision."
+    },
+    {
+      "code": "cs.LG",
+      "name": "Machine Learning",
+      "description": "Papers on all aspects of machine learning, deep learning, and statistical pattern recognition."
+    },
+    {
+      "code": "cs.CV",
+      "name": "Computer Vision",
+      "description": "Image processing, computer vision, pattern recognition, and scene analysis."
+    },
+    {
+      "code": "cs.CL",
+      "name": "Computation and Language",
+      "description": "Natural language processing, computational linguistics, and speech recognition."
+    }
+  ]
+}
