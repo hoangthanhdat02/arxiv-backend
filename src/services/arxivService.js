@@ -6,29 +6,80 @@ const fs = require('fs');
 const ARXIV_BASE_URL = process.env.ARXIV_BASE_URL || 'https://export.arxiv.org/api/query';
 const CACHE_TTL_MS = parseInt(process.env.CACHE_TTL_MS || '600000', 10); // 10 minutes
 const RATE_LIMIT_DELAY_MS = parseInt(process.env.RATE_LIMIT_DELAY_MS || '3000', 10); // 3 seconds
+const MAX_CACHE_ENTRIES = 200;
 
 // In-memory cache: queryKey -> { timestamp, data }
 const memoryCache = new Map();
 
-// Rate limit queue
-let lastRequestTime = 0;
-async function waitRateLimit() {
-  const now = Date.now();
-  const timeSinceLast = now - lastRequestTime;
-  if (timeSinceLast < RATE_LIMIT_DELAY_MS) {
-    const delay = RATE_LIMIT_DELAY_MS - timeSinceLast;
-    await new Promise((resolve) => setTimeout(resolve, delay));
+function getFromCache(key) {
+  const cached = memoryCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
   }
-  lastRequestTime = Date.now();
+  if (cached) {
+    memoryCache.delete(key);
+  }
+  return null;
 }
 
-// Fallback sample data in case arXiv API is unreachable
+function setCache(key, data) {
+  // Evict oldest entry if cache exceeds limit (prevent memory leak)
+  if (memoryCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = memoryCache.keys().next().value;
+    if (oldestKey) memoryCache.delete(oldestKey);
+  }
+  memoryCache.set(key, { timestamp: Date.now(), data });
+}
+
+// Sequential Promise Queue (Ensures STRICTLY 1 request / 3s to arXiv servers)
+let requestQueue = Promise.resolve();
+let lastArxivRequestTimestamp = 0;
+
+function queueArxivRequest(requestTask) {
+  const taskExecution = requestQueue
+    .catch(() => {}) // Don't let previous failures block future requests
+    .then(async () => {
+      const now = Date.now();
+      const timeSinceLast = now - lastArxivRequestTimestamp;
+      if (timeSinceLast < RATE_LIMIT_DELAY_MS && lastArxivRequestTimestamp !== 0) {
+        const waitTime = RATE_LIMIT_DELAY_MS - timeSinceLast;
+        console.log(`[RateLimiter] ⏳ Enforcing arXiv policy: waiting ${waitTime}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
+      try {
+        return await requestTask();
+      } finally {
+        lastArxivRequestTimestamp = Date.now();
+      }
+    });
+
+  requestQueue = taskExecution;
+  return taskExecution;
+}
+
+// Fallback sample data in case arXiv API is unreachable or in Airplane Mode
 function getFallbackPapers() {
   try {
     const samplePath = path.join(__dirname, '..', '..', 'data', 'sample_papers.json');
     if (fs.existsSync(samplePath)) {
       const raw = fs.readFileSync(samplePath, 'utf8');
-      return JSON.parse(raw);
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        return list.map((item) => ({
+          id: String(item.id || '').trim(),
+          title: String(item.title || '').replace(/\s+/g, ' ').trim(),
+          summary: String(item.summary || item.abstract || '').replace(/\s+/g, ' ').trim(),
+          authors: Array.isArray(item.authors) && item.authors.length > 0 ? item.authors : [String(item.authors || 'arXiv Researcher')],
+          published: String(item.published || item.published_date || new Date().toISOString()),
+          updated: String(item.updated || item.updated_date || item.published || new Date().toISOString()),
+          categories: Array.isArray(item.categories) ? item.categories : ['cs.AI'],
+          primaryCategory: String(item.primaryCategory || item.primary_category || 'cs.AI'),
+          pdfUrl: String(item.pdfUrl || item.pdf_url || `https://arxiv.org/pdf/${item.id}.pdf`),
+          arxivUrl: String(item.arxivUrl || `https://arxiv.org/abs/${item.id}`),
+          doi: item.doi ? String(item.doi) : null,
+          comment: item.comment ? String(item.comment) : null,
+        }));
+      }
     }
   } catch (err) {
     console.warn('[arxivService] Failed to read sample papers fallback:', err.message);
@@ -49,9 +100,9 @@ const xmlParser = new XMLParser({
 function normalizeEntry(entry) {
   if (!entry) return null;
 
-  const rawId = entry.id || '';
+  const rawId = (entry.id || '').trim();
   const idMatch = rawId.match(/abs\/(.+)$/) || rawId.match(/arxiv\.org\/abs\/(.+)$/);
-  const cleanId = idMatch ? idMatch[1] : rawId.replace('http://arxiv.org/abs/', '');
+  const cleanId = (idMatch ? idMatch[1] : rawId.replace(/^https?:\/\/arxiv\.org\/abs\//i, '')).trim();
 
   const title = (entry.title || '').replace(/\s+/g, ' ').trim();
   const summary = (entry.summary || '').replace(/\s+/g, ' ').trim();
@@ -62,10 +113,14 @@ function normalizeEntry(entry) {
     if (Array.isArray(entry.author)) {
       authors = entry.author.map((a) => (typeof a === 'string' ? a : a.name || '')).filter(Boolean);
     } else if (typeof entry.author === 'object') {
-      authors = [entry.author.name || ''];
+      const name = entry.author.name || '';
+      if (name) authors = [name];
     } else {
       authors = [String(entry.author)];
     }
+  }
+  if (authors.length === 0) {
+    authors = ['arXiv Researcher'];
   }
 
   // Categories
@@ -125,30 +180,34 @@ function normalizeEntry(entry) {
  * Fetch papers by category (e.g. cs.AI or cs.LG) with pagination
  */
 async function fetchPapers({ category = 'cs.AI', page = 0, limit = 10 } = {}) {
-  const cacheKey = `papers:${category}:${page}:${limit}`;
-  const cached = memoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.data;
+  const safePage = Math.max(0, parseInt(page, 10) || 0);
+  const safeLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 30));
+
+  const cacheKey = `papers:${category}:${safePage}:${safeLimit}`;
+  const cachedData = getFromCache(cacheKey);
+  if (cachedData) {
+    return { ...cachedData, fromCache: true };
   }
 
-  const start = page * limit;
+  const start = safePage * safeLimit;
   const searchQuery = `cat:${category}`;
 
   try {
-    await waitRateLimit();
-    const response = await axios.get(ARXIV_BASE_URL, {
-      params: {
-        search_query: searchQuery,
-        start,
-        max_results: limit,
-        sortBy: 'submittedDate',
-        sortOrder: 'descending',
-      },
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'arXiv-Mobile-Client/1.0 (Topic 28 Academic Project)',
-      },
-    });
+    const response = await queueArxivRequest(() =>
+      axios.get(ARXIV_BASE_URL, {
+        params: {
+          search_query: searchQuery,
+          start,
+          max_results: safeLimit,
+          sortBy: 'submittedDate',
+          sortOrder: 'descending',
+        },
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'arXiv-Mobile-Client/1.0 (Topic 28 Academic Project)',
+        },
+      })
+    );
 
     const parsed = xmlParser.parse(response.data);
     const feed = parsed.feed || {};
@@ -164,25 +223,25 @@ async function fetchPapers({ category = 'cs.AI', page = 0, limit = 10 } = {}) {
       status: 'success',
       category,
       totalResults,
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       data: items,
     };
 
-    memoryCache.set(cacheKey, { timestamp: Date.now(), data: result });
+    setCache(cacheKey, result);
     return result;
   } catch (error) {
     console.error(`[arxivService] Error fetching arXiv category ${category}:`, error.message);
     const fallbackList = getFallbackPapers().filter((p) => !category || p.primaryCategory === category || p.categories?.includes(category));
-    const paged = fallbackList.slice(start, start + limit);
+    const paged = fallbackList.slice(start, start + safeLimit);
     return {
       status: 'fallback',
       category,
       totalResults: fallbackList.length,
-      page,
-      limit,
-      data: paged.length > 0 ? paged : getFallbackPapers().slice(0, limit),
-      warning: 'Live arXiv request failed, serving local cached sample papers.',
+      page: safePage,
+      limit: safeLimit,
+      data: paged.length > 0 ? paged : getFallbackPapers().slice(0, safeLimit),
+      warning: 'Live arXiv request failed or timed out, serving local cached sample papers.',
     };
   }
 }
@@ -191,16 +250,21 @@ async function fetchPapers({ category = 'cs.AI', page = 0, limit = 10 } = {}) {
  * Search papers by keyword, category, and sort
  */
 async function searchPapers({ query = '', category = '', sortBy = 'relevance', page = 0, limit = 10 } = {}) {
-  const cacheKey = `search:${query}:${category}:${sortBy}:${page}:${limit}`;
-  const cached = memoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.data;
+  const normalizedQuery = (query || '').trim().toLowerCase();
+  const safePage = Math.max(0, parseInt(page, 10) || 0);
+  const safeLimit = Math.max(1, Math.min(parseInt(limit, 10) || 10, 30));
+
+  const cacheKey = `search:${normalizedQuery}:${category}:${sortBy}:${safePage}:${safeLimit}`;
+  const cachedData = getFromCache(cacheKey);
+  if (cachedData) {
+    return { ...cachedData, fromCache: true };
   }
 
-  const start = page * limit;
+  const start = safePage * safeLimit;
   let searchQuery = '';
+  // Note: Using standard space for boolean AND so Axios encodes properly without double %2B
   if (query && category) {
-    searchQuery = `all:${query}+AND+cat:${category}`;
+    searchQuery = `all:${query} AND cat:${category}`;
   } else if (query) {
     searchQuery = `all:${query}`;
   } else if (category) {
@@ -216,20 +280,21 @@ async function searchPapers({ query = '', category = '', sortBy = 'relevance', p
   }
 
   try {
-    await waitRateLimit();
-    const response = await axios.get(ARXIV_BASE_URL, {
-      params: {
-        search_query: searchQuery,
-        start,
-        max_results: limit,
-        sortBy: arxivSortBy,
-        sortOrder: arxivSortOrder,
-      },
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'arXiv-Mobile-Client/1.0 (Topic 28 Academic Project)',
-      },
-    });
+    const response = await queueArxivRequest(() =>
+      axios.get(ARXIV_BASE_URL, {
+        params: {
+          search_query: searchQuery,
+          start,
+          max_results: safeLimit,
+          sortBy: arxivSortBy,
+          sortOrder: arxivSortOrder,
+        },
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'arXiv-Mobile-Client/1.0 (Topic 28 Academic Project)',
+        },
+      })
+    );
 
     const parsed = xmlParser.parse(response.data);
     const feed = parsed.feed || {};
@@ -247,20 +312,20 @@ async function searchPapers({ query = '', category = '', sortBy = 'relevance', p
       category,
       sortBy,
       totalResults,
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       data: items,
     };
 
-    memoryCache.set(cacheKey, { timestamp: Date.now(), data: result });
+    setCache(cacheKey, result);
     return result;
   } catch (error) {
     console.error(`[arxivService] Error searching arXiv:`, error.message);
     const fallbackList = getFallbackPapers().filter((p) => {
       const titleStr = (p.title || '').toLowerCase();
-      const summaryStr = (p.summary || p.abstract || '').toLowerCase();
-      const qLower = query.toLowerCase();
-      const matchQ = !query || titleStr.includes(qLower) || summaryStr.includes(qLower);
+      const summaryStr = (p.summary || '').toLowerCase();
+      const qLower = normalizedQuery;
+      const matchQ = !qLower || titleStr.includes(qLower) || summaryStr.includes(qLower);
       const matchC = !category || p.primaryCategory === category || (p.categories && p.categories.includes(category));
       return matchQ && matchC;
     });
@@ -269,10 +334,10 @@ async function searchPapers({ query = '', category = '', sortBy = 'relevance', p
       query,
       category,
       totalResults: fallbackList.length,
-      page,
-      limit,
-      data: fallbackList.slice(start, start + limit),
-      warning: 'Live arXiv search failed, serving filtered local sample papers.',
+      page: safePage,
+      limit: safeLimit,
+      data: fallbackList.slice(start, start + safeLimit),
+      warning: 'Live arXiv search failed or timed out, serving filtered local sample papers.',
     };
   }
 }
@@ -281,19 +346,23 @@ async function searchPapers({ query = '', category = '', sortBy = 'relevance', p
  * Get single paper detail by ID
  */
 async function getPaperById(id) {
-  const cleanId = id.replace(/^arxiv:/i, '');
+  const cleanId = (id || '').replace(/^arxiv:/i, '').trim();
   const cacheKey = `paper:${cleanId}`;
-  const cached = memoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.data;
+  const cachedData = getFromCache(cacheKey);
+  if (cachedData) {
+    return cachedData;
   }
 
   try {
-    await waitRateLimit();
-    const response = await axios.get(ARXIV_BASE_URL, {
-      params: { id_list: cleanId },
-      timeout: 10000,
-    });
+    const response = await queueArxivRequest(() =>
+      axios.get(ARXIV_BASE_URL, {
+        params: { id_list: cleanId },
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'arXiv-Mobile-Client/1.0 (Topic 28 Academic Project)',
+        },
+      })
+    );
     const parsed = xmlParser.parse(response.data);
     const feed = parsed.feed || {};
     let entry = feed.entry;
@@ -301,7 +370,7 @@ async function getPaperById(id) {
 
     if (entry) {
       const paper = normalizeEntry(entry);
-      memoryCache.set(cacheKey, { timestamp: Date.now(), data: paper });
+      setCache(cacheKey, paper);
       return paper;
     }
   } catch (err) {
@@ -310,7 +379,9 @@ async function getPaperById(id) {
 
   // Fallback
   const samples = getFallbackPapers();
-  const found = samples.find((s) => s.id === cleanId || s.id.includes(cleanId));
+  const found = samples.find(
+    (s) => s.id === cleanId || cleanId.startsWith(s.id) || s.id.startsWith(cleanId)
+  );
   if (found) return found;
 
   return {
@@ -331,4 +402,5 @@ module.exports = {
   fetchPapers,
   searchPapers,
   getPaperById,
+  getFallbackPapers,
 };
