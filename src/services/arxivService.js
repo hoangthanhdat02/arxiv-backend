@@ -257,8 +257,11 @@ async function searchPapers({ query = '', category = '', sortBy = 'relevance', p
   } catch (error) {
     console.error(`[arxivService] Error searching arXiv:`, error.message);
     const fallbackList = getFallbackPapers().filter((p) => {
-      const matchQ = !query || p.title.toLowerCase().includes(query.toLowerCase()) || p.summary.toLowerCase().includes(query.toLowerCase());
-      const matchC = !category || p.primaryCategory === category || p.categories?.includes(category);
+      const titleStr = (p.title || '').toLowerCase();
+      const summaryStr = (p.summary || p.abstract || '').toLowerCase();
+      const qLower = query.toLowerCase();
+      const matchQ = !query || titleStr.includes(qLower) || summaryStr.includes(qLower);
+      const matchC = !category || p.primaryCategory === category || (p.categories && p.categories.includes(category));
       return matchQ && matchC;
     });
     return {
