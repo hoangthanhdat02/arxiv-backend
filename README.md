@@ -1,57 +1,75 @@
-<div align="center">
+# 🚀 arXiv Mobile Backend Gateway (ExpressJS) - Topic 28
 
-# 🚀 arXiv Client - Backend API Service
-### Topic 28: NestJS Microservice & arXiv Ingestion Pipeline
-
-[![NestJS](https://img.shields.io/badge/NestJS-10.4-e0234e?style=flat-square&logo=nestjs)](https://nestjs.com)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![Swagger](https://img.shields.io/badge/Swagger-OpenAPI-85ea2d?style=flat-square&logo=swagger)](http://localhost:3001/api/docs)
-[![License](https://img.shields.io/badge/License-MIT-amber?style=flat-square)](LICENSE)
-
-*High-performance, modular NestJS REST API with rate-limited arXiv data ingestion, full-text search, and automated BibTeX/APA citation generation.*
-
-</div>
+> **Dịch vụ Gateway & Middleware trung gian cho Ứng dụng Di động arXiv Client**  
+> Môn học: **Phát triển Ứng dụng Di động (Mobile Application Development)**  
+> Hình thức nghiệm thu: Live Demo trực tiếp từ mã nguồn trên Máy giả lập Android (AVD).
 
 ---
 
-## 🎯 1. Tính năng Phía Backend
+## 👥 Phân công trách nhiệm Backend (Theo Kế hoạch & Đặc tả dự án)
 
-* **`PapersModule`:** Cung cấp danh sách bài báo arXiv phân trang theo chuyên mục (`cs.AI`, `cs.LG`, `cs.CV`).
-* **`SearchModule`:** Tìm kiếm toàn văn (title, abstract, author) có hỗ trợ sắp xếp theo relevance / date.
-* **`LibraryModule`:** Quản lý bookmark cá nhân, tự động format **BibTeX / APA** và export file `.bib`.
-* **`HealthModule`:** Endpoint liveness probe `/api/health`.
-* **Swagger OpenAPI:** Giao diện test API trực quan tại `http://localhost:3001/api/docs`.
-* **arXiv Crawler Pipeline:** Script Python cào dữ liệu có **delay 3 giây** tuân thủ điều khoản arXiv.
+* **Thành viên 2 (Backend Lead - DatCao):**
+  * Thiết lập server ExpressJS, CORS, Logging.
+  * Tích hợp gọi arXiv API qua HTTP (`axios`) với chuyên mục `cs.AI`, `cs.LG`.
+  * Bộ giải mã XML Atom 1.0 sang JSON (`fast-xml-parser`).
+  * Thuật toán Rate Limiting (1 request / 3s) và Cache bộ đệm Memory (10 phút).
+  * Đóng gói REST API `/api/papers` và `/api/search`.
+* **Thành viên 7 (Backend Helper - Hiếu Bigh):**
+  * Lập trình endpoint `/api/bibtex/:paperId` sinh trích dẫn học thuật chuẩn BibTeX `@misc` và APA.
+  * Phối hợp kết nối dữ liệu SQLite với Android Client.
+* **Thành viên 1 (Leader - Đạt_con):** Giám sát API contract và tích hợp hệ thống.
 
 ---
 
-## ⚡ 2. Cài đặt & Khởi chạy Nhanh
+## 🛠️ Công nghệ sử dụng
+* **Runtime:** Node.js (v18+)
+* **Framework:** ExpressJS 4.x
+* **Thư viện chính:**
+  * `axios`: Giao tiếp HTTP với máy chủ arXiv.
+  * `fast-xml-parser`: Parse dữ liệu XML Atom 1.0 sang JSON cực nhanh.
+  * `cors`: Cho phép kết nối an toàn từ Android Emulator và Web.
+  * `dotenv`: Quản lý biến môi trường (`PORT`, `RATE_LIMIT_DELAY_MS`, `CACHE_TTL_MS`).
 
+---
+
+## 📡 Danh sách RESTful API cho Android Client
+
+| Phương thức | Đường dẫn API | Tham số | Mô tả chức năng |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/papers` | `category=cs.AI` hoặc `cs.LG`<br>`page=0`<br>`limit=10` | Lấy danh sách bài báo mới nhất theo chuyên mục (Feed trang chủ). |
+| `GET` | `/api/papers/:id` | `id` (e.g. `2401.12345`) | Lấy thông tin chi tiết bài báo (Abstract, tác giả, link PDF). |
+| `GET` | `/api/search` | `q={từ_khóa}`<br>`category={cs.AI/cs.LG}`<br>`sortBy=relevance/submittedDate`<br>`page=0` | Tìm kiếm bài báo đa tiêu chí có hỗ trợ debounce. |
+| `GET` | `/api/bibtex/:paperId` | `paperId` | Trả về chuỗi trích dẫn học thuật chuẩn BibTeX và định dạng APA. |
+| `GET` | `/api/health` | Không | Kiểm tra trạng thái hoạt động của server và kết nối. |
+
+---
+
+## 📱 Hướng dẫn cấu hình kết nối Android Emulator (AVD)
+
+Khi chạy ứng dụng Android trên **Máy giả lập Android (AVD)**, để gọi về máy tính đang chạy Backend:
+* **Địa chỉ gọi từ máy tính:** `http://localhost:3001`
+* **Địa chỉ gọi từ Máy giả lập AVD:** 👉 **`http://10.0.2.2:3001`** *(10.0.2.2 là địa chỉ IP alias đặc biệt của máy ảo trỏ về localhost máy tính)*.
+
+---
+
+## 🚀 Hướng dẫn khởi chạy Backend
+
+### 1. Cài đặt thư viện
 ```bash
-# 1. Cài đặt dependencies
 npm install
-
-# 2. Khởi chạy server ở chế độ phát triển (port 3001)
-npm run start:dev
 ```
 
-* **Swagger Docs:** [http://localhost:3001/api/docs](http://localhost:3001/api/docs)
-* **API Papers:** [http://localhost:3001/api/papers](http://localhost:3001/api/papers)
-* **Health Check:** [http://localhost:3001/api/health](http://localhost:3001/api/health)
+### 2. Chạy Server
+* **Chế độ phát triển / Demo:**
+```bash
+npm start
+# hoặc
+npm run dev
+```
 
----
+Server sẽ lắng nghe tại `http://localhost:3001` (và `http://10.0.2.2:3001` trên máy ảo).
 
-## 👥 3. Phân công Thành viên Team Backend
-
-* **TV 2 (Data & Crawler):** Phụ trách `notebooks/arxiv_crawler.py` và tối ưu pipeline cào dữ liệu arXiv Atom XML.
-* **TV 3 (Core REST API):** Phụ trách `src/modules/papers/` (phân trang, category filter, cache).
-* **TV 4 (Search & Citations):** Phụ trách `src/modules/search/` và `src/modules/library/` (sinh mã BibTeX, APA, export `.bib`).
-* **TV 1 (Lead):** Review code, kiểm tra Swagger và quản lý Git.
-
----
-
-## 📜 4. Điều khoản arXiv (Compliance)
-
-> *"Thank you to arXiv for use of its open access interoperability."*
-* Rate limit: Tối đa 1 request mỗi 3 giây.
-* Không lưu trữ và phân phối lại file PDF bản quyền.
+### 3. Kiểm tra nhanh API bằng trình duyệt hoặc Postman
+* Kiểm tra Feed: [http://localhost:3001/api/papers?category=cs.AI](http://localhost:3001/api/papers?category=cs.AI)
+* Kiểm tra Search: [http://localhost:3001/api/search?q=transformer](http://localhost:3001/api/search?q=transformer)
+* Kiểm tra BibTeX: [http://localhost:3001/api/bibtex/2401.12345](http://localhost:3001/api/bibtex/2401.12345)
