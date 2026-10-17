@@ -10,8 +10,8 @@ const { generateCitation } = require('../services/bibtexService');
 router.get('/papers', async (req, res) => {
   try {
     const category = req.query.category || 'cs.AI';
-    const page = parseInt(req.query.page || '0', 10);
-    const limit = Math.min(parseInt(req.query.limit || '10', 10), 30);
+    const page = Math.max(0, parseInt(req.query.page || '0', 10) || 0);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || '10', 10) || 10, 30));
 
     const result = await fetchPapers({ category, page, limit });
     return res.json(result);
@@ -43,8 +43,8 @@ router.get('/search', async (req, res) => {
     const query = req.query.q || req.query.query || '';
     const category = req.query.category || '';
     const sortBy = req.query.sortBy || 'relevance';
-    const page = parseInt(req.query.page || '0', 10);
-    const limit = Math.min(parseInt(req.query.limit || '10', 10), 30);
+    const page = Math.max(0, parseInt(req.query.page || '0', 10) || 0);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || '10', 10) || 10, 30));
 
     const result = await searchPapers({ query, category, sortBy, page, limit });
     return res.json(result);
