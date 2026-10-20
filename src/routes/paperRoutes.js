@@ -54,10 +54,16 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// New-style arXiv id, e.g. 2401.12345 or arxiv:2401.12345v2
+const ARXIV_ID_PATTERN = /^(arxiv:)?\d{4}\.\d{4,5}(v\d+)?$/i;
+
 /**
  * GET /api/bibtex/:paperId
  */
 router.get('/bibtex/:paperId', async (req, res) => {
+  if (!ARXIV_ID_PATTERN.test(req.params.paperId)) {
+    return res.status(400).json({ status: 'error', message: `Invalid arXiv id: ${req.params.paperId}` });
+  }
   try {
     const citation = await generateCitation(req.params.paperId);
     return res.json(citation);
