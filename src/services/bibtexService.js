@@ -1,5 +1,10 @@
 const { getPaperById } = require('./arxivService');
 
+// arXiv titles/authors arrive with hard line breaks and runs of spaces from the Atom XML
+function clean(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Generate standard BibTeX @misc block and APA string for a paper
  */
@@ -7,38 +12,42 @@ async function generateCitation(paperId) {
   const paper = await getPaperById(paperId);
   const cleanId = paper.id.replace(/[^a-zA-Z0-9._-]/g, '');
 
-  const year = paper.published ? new Date(paper.published).getFullYear() : new Date().getFullYear();
-  const authorsBib = paper.authors && paper.authors.length > 0 ? paper.authors.join(' and ') : 'Anonymous';
+  const title = clean(paper.title);
+  const authors = (paper.authors || []).map(clean).filter(Boolean);
+  const year = paper.published ? new Date(paper.published).getUTCFullYear() : new Date().getUTCFullYear();
+  const authorsBib = authors.length > 0 ? authors.join(' and ') : 'Anonymous';
+  const url = paper.arxivUrl || `https://arxiv.org/abs/${paper.id}`;
 
   // Format BibTeX
+  const doiField = paper.doi ? `\n  doi = {${paper.doi}},` : '';
   const bibtex = `@misc{arxiv:${cleanId},
-  title = {${paper.title}},
+  title = {${title}},
   author = {${authorsBib}},
   year = {${year}},
   eprint = {${paper.id}},
   archivePrefix = {arXiv},
-  primaryClass = {${paper.primaryCategory || 'cs.AI'}},
-  url = {${paper.arxivUrl || `https://arxiv.org/abs/${paper.id}`}}
+  primaryClass = {${paper.primaryCategory || 'cs.AI'}},${doiField}
+  url = {${url}}
 }`;
 
   // Format APA 7th style
   let authorsApa = 'Anonymous';
-  if (paper.authors && paper.authors.length > 0) {
-    if (paper.authors.length === 1) {
-      authorsApa = paper.authors[0];
-    } else if (paper.authors.length === 2) {
-      authorsApa = `${paper.authors[0]} & ${paper.authors[1]}`;
-    } else {
-      authorsApa = `${paper.authors[0]} et al.`;
-    }
+  if (authors.length === 1) {
+    authorsApa = authors[0];
+  } else if (authors.length === 2) {
+    authorsApa = `${authors[0]} & ${authors[1]}`;
+  } else if (authors.length > 2) {
+    authorsApa = `${authors[0]} et al.`;
   }
-  const apa = `${authorsApa} (${year}). ${paper.title}. arXiv preprint arXiv:${paper.id}. ${paper.arxivUrl || ''}`;
+  const doiApa = paper.doi ? ` https://doi.org/${paper.doi}` : '';
+  const apa = `${authorsApa} (${year}). ${title}. arXiv preprint arXiv:${paper.id}.${doiApa} ${url}`;
 
   return {
     status: 'success',
     paperId: paper.id,
-    title: paper.title,
+    title,
     year,
+    doi: paper.doi || null,
     bibtex,
     apa,
   };

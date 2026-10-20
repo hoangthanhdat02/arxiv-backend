@@ -11,6 +11,11 @@ async function runTests() {
   assert.strictEqual(citation.status, 'success', 'Citation status should be success');
   assert(citation.bibtex.includes('@misc'), 'BibTeX must contain @misc');
   assert(citation.apa.length > 0, 'APA citation must not be empty');
+  for (const field of ['title =', 'author =', 'year =', 'eprint =', 'url =']) {
+    assert(citation.bibtex.includes(field), `BibTeX must contain "${field}"`);
+  }
+  assert('doi' in citation, 'Citation response must expose a doi key');
+  assert(!/\s{2,}|\n/.test(citation.title), 'Title must be whitespace-normalized');
   console.log('   ✅ Citation Service passed!\n');
 
   // Test 2: Category Paper Fetching (cs.AI & cs.LG)
